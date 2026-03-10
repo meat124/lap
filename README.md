@@ -32,16 +32,19 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 
 Example inference script: [scripts/real_robot/droid_main.py](scripts/real_robot/droid_main.py)
 
-Download the LAP checkpoint from [lihzha/LAP-3B](https://huggingface.co/lihzha/LAP-3B) and place it at:
+Download the LAP checkpoint from [lihzha/LAP-3B](https://huggingface.co/lihzha/LAP-3B):
 
 ```bash
-./checkpoint/lap
+hf download lihzha/LAP-3B --local-dir ./checkpoint/lap
 ```
+
+By default, additional assets are cached in `~/.cache/openpi` when needed.  
+You can change the download location by setting the `OPENPI_DATA_HOME` environment variable.
 
 ### 1. Start the policy server
 
 ```bash
-JAX_PLATFORMS=cuda uv run --group cuda scripts/serve_policy.py policy:checkpoint --env=LAP
+JAX_PLATFORMS=cuda uv run --group cuda scripts/serve_policy.py --env=LAP
 ```
 
 ### 2. Run on DROID
@@ -65,10 +68,10 @@ To add support for another robot, use [scripts/real_robot/franka_main.py](script
 
 ## LIBERO Evaluation
 
-Download the LIBERO checkpoint from [lihzha/LAP-3B-Libero](https://huggingface.co/lihzha/LAP-3B-Libero) and place it at:
+Download the LIBERO checkpoint from [lihzha/LAP-3B-Libero](https://huggingface.co/lihzha/LAP-3B-Libero)
 
 ```bash
-./checkpoint/lap_libero
+hf download lihzha/LAP-3B-Libero --local-dir ./checkpoint/lap_libero
 ```
 
 Then follow [scripts/libero/README.md](scripts/libero/README.md).

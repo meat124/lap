@@ -69,13 +69,18 @@ def create_policy(args: Args) -> _policy.Policy:
     if checkpoint is None:
         raise ValueError(f"Unsupported environment mode: {args.env}")
 
+    config = _config.get_config(checkpoint.config)
+    # Always disable stop_action_to_vlm_grad for inference — this flag is only
+    # meaningful during training.
+    config = dataclasses.replace(config, model=dataclasses.replace(config.model, stop_action_to_vlm_grad=False))
+
     if checkpoint.type == "ar":
         return _policy_config.create_trained_policy_ar(
-            _config.get_config(checkpoint.config), checkpoint.dir, default_prompt=args.default_prompt
+            config, checkpoint.dir, default_prompt=args.default_prompt
         )
     if checkpoint.type == "flow":
         return _policy_config.create_trained_policy(
-            _config.get_config(checkpoint.config), checkpoint.dir, default_prompt=args.default_prompt
+            config, checkpoint.dir, default_prompt=args.default_prompt
         )
     raise NotImplementedError
 

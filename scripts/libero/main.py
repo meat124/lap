@@ -14,7 +14,6 @@ import numpy as np
 from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 from scipy.spatial.transform import Rotation as R
-from scipy.spatial.transform import Slerp
 import tqdm
 import tyro
 
@@ -37,7 +36,7 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8000
     resize_size: int = 224
-    replan_steps: int = 5
+    replan_steps: int = 2
     policy_type: PolicyType = PolicyType.LAP
 
     #################################################################################################################
@@ -152,12 +151,13 @@ def eval_libero(args: Args) -> None:
                         single_action_or_chunk = np.asarray(response["actions"], dtype=np.float32)
                         if single_action_or_chunk.ndim == 1:
                             assert args.policy_type == PolicyType.LAP_AR
+                            print(response)
                             action_chunk = get_action_from_response(
                                 args.replan_steps, response, request["observation"]["state"]
                             )
                         else:
                             action_chunk = single_action_or_chunk
-                            action_chunk = invert_and_scale_gripper(single_action_or_chunk)
+                        action_chunk = invert_and_scale_gripper(action_chunk)
                         assert len(action_chunk) >= args.replan_steps, (
                             f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                         )
@@ -170,6 +170,7 @@ def eval_libero(args: Args) -> None:
                     action = action_plan.popleft()
 
                     # Execute action in environment
+                    print(action[-1])
                     obs, _, done, _ = env.step(action.tolist())
                     if done:
                         task_successes += 1
@@ -315,68 +316,30 @@ def _quat2rot6d(quat):
     return rot6d
 
 
-def get_action_from_response(replan_steps, response, state):
-    curr_pos = np.asarray(state[:3], dtype=float)
-    curr_rpy = np.asarray(state[3:6], dtype=float)
+_OSC_POS_OUTPUT_MAX = 0.05   # meters: OSC_POSE scales [-1, 1] input → [-0.05, 0.05] m
+_OSC_ROT_OUTPUT_MAX = 0.5    # radians: OSC_POSE scales [-1, 1] input → [-0.5, 0.5] rad
 
+
+def get_action_from_response(replan_steps, response, state):
     action = np.asarray(response["actions"])
     grip_action = action[-1]
-    print(grip_action)
 
-    # Linearly interpolate to replan_steps actions
-    positions = np.linspace(curr_pos, curr_pos + action[:3], replan_steps, endpoint=True)
-    rpy_arr = interpolate_rpy(curr=curr_rpy, delta=action[3:6], steps=replan_steps)
+    # Policy outputs real-world deltas (meters, radians). LIBERO controller expects normalized
+    # [-1, 1] inputs which it scales by output_max. Divide total delta evenly across
+    # replan_steps (equivalent to uniform SLERP for rotation).
+
+    # Position: normalize by OSC output_max (0.05 m), split across steps
+    pos_per_step = (action[:3] / _OSC_POS_OUTPUT_MAX) / replan_steps
+    pos_actions = np.tile(pos_per_step, (replan_steps, 1))
+
+    # Rotation: convert delta extrinsic Euler XYZ → axis-angle, normalize by OSC
+    # output_max (0.5 rad), split across steps
+    delta_rotvec = R.from_euler("xyz", action[3:6]).as_rotvec()
+    rot_per_step = (delta_rotvec / _OSC_ROT_OUTPUT_MAX) / replan_steps
+    rot_actions = np.tile(rot_per_step, (replan_steps, 1))
+
     grip_vals = np.full((replan_steps, 1), grip_action)
-    # grip_vals[: self.replan_steps // 2] = 1 - curr_obs["gripper_position"]
-    return np.concatenate([positions, rpy_arr, grip_vals], axis=1)
-
-
-def interpolate_rpy(curr, delta, steps):
-    """Interpolate roll-pitch-yaw angles using quaternion SLERP.
-
-    This function uses spherical linear interpo lation (SLERP) on quaternions
-    to provide smooth rotation interpolation, avoiding gimbal lock and
-    discontinuities that occur with naive linear interpolation of Euler angles.
-
-    Args:
-        curr: Current RPY angles as array of shape (3,) in radians
-        delta: Change in RPY angles as array of shape (3,) or (n, 3) in radians
-        steps: Number of interpolation steps
-
-    Returns:
-        Array of shape (steps, 3) with interpolated RPY values in radians
-    """
-    curr = np.asarray(curr, dtype=float)
-    delta = np.asarray(delta, dtype=float)
-
-    # Handle both 1D and 2D delta inputs
-    if delta.ndim == 1:
-        # Single delta vector - interpolate from curr to curr + delta
-        target_rpy = curr + delta
-    else:
-        # Multiple deltas - use the first one
-        target_rpy = curr + delta[0] if len(delta) > 0 else curr
-
-    # Convert current and target RPY to rotation objects
-    # RPY convention: rotate around x (roll), then y (pitch), then z (yaw)
-    rot_curr = R.from_euler("xyz", curr, degrees=False)
-    rot_target = R.from_euler("xyz", target_rpy, degrees=False)
-
-    # Create SLERP interpolator
-    key_times = np.array([0, 1])
-    key_rots = R.concatenate([rot_curr, rot_target])
-    slerp = Slerp(key_times, key_rots)
-
-    # Generate interpolation times
-    interp_times = np.linspace(0, 1, steps, endpoint=True)
-
-    # Perform SLERP interpolation
-    interpolated_rots = slerp(interp_times)
-
-    # Convert back to RPY
-    rpy_arr = interpolated_rots.as_euler("xyz", degrees=False)
-
-    return rpy_arr
+    return np.concatenate([pos_actions, rot_actions, grip_vals], axis=1)
 
 
 if __name__ == "__main__":

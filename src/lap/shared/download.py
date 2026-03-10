@@ -13,7 +13,6 @@ from etils import epath
 import filelock
 import tensorflow as tf
 
-_OPENPI_DATA_HOME = "OPENPI_DATA_HOME"
 _CACHE_COMPLETE_MARKER = "COMMIT_SUCCESS"
 _LEGACY_COMPLETE_MARKER = "commit_success.txt"
 
@@ -26,16 +25,14 @@ def get_cache_dir() -> pathlib.Path | epath.Path:
     Environment variable `OPENPI_DATA_HOME` must point to either a local POSIX path
     or a `gs://` URI.
     """
-    cache_dir_str = os.getenv(_OPENPI_DATA_HOME)
-    if cache_dir_str is None:
-        raise ValueError(f"Environment variable {_OPENPI_DATA_HOME} must be set.")
+    cache_dir_str = os.getenv("OPENPI_DATA_HOME", "~/.cache/openpi")
 
     if _is_gcs(cache_dir_str):
         cache_dir = epath.Path(cache_dir_str)
         tf.io.gfile.makedirs(str(cache_dir))
         return cache_dir
 
-    cache_dir = pathlib.Path(cache_dir_str)
+    cache_dir = pathlib.Path(cache_dir_str).expanduser()
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -147,7 +144,7 @@ def _join(*parts: str | pathlib.Path | epath.Path) -> str:
 
 def _same_bucket_source(url: str) -> epath.Path | None:
     """Return source path when cache/source share bucket; validate existence first."""
-    cache_dir_probe = os.getenv(_OPENPI_DATA_HOME)
+    cache_dir_probe = os.getenv("OPENPI_DATA_HOME", "~/.cache/openpi")
     if not (cache_dir_probe and _is_gcs(cache_dir_probe)):
         return None
 

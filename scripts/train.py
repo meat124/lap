@@ -121,7 +121,7 @@ def init_tpu(config: _config.TrainConfig):
     # )
 
     data_dir = save_dir = config.data.rlds_data_dir
-    cache_dir = os.environ.get("OPENPI_DATA_HOME", None)
+    cache_dir = os.environ.get("OPENPI_DATA_HOME", "~/.cache/openpi")
     if _is_tpu_runtime() and (str(data_dir).startswith("gs://") or str(save_dir).startswith("gs://")):
         prevent_cross_region(data_dir, save_dir)
         if cache_dir is not None:
