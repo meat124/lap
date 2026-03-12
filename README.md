@@ -35,7 +35,7 @@ Example inference script: [scripts/real_robot/droid_main.py](scripts/real_robot/
 Download the LAP checkpoint from [lihzha/LAP-3B](https://huggingface.co/lihzha/LAP-3B):
 
 ```bash
-hf download lihzha/LAP-3B --local-dir ./checkpoint/lap
+hf download lihzha/LAP-3B --local-dir ./checkpoints/lap
 ```
 
 By default, additional assets are cached in `~/.cache/openpi` when needed.  
@@ -71,7 +71,7 @@ To add support for another robot, use [scripts/real_robot/franka_main.py](script
 Download the LIBERO checkpoint from [lihzha/LAP-3B-Libero](https://huggingface.co/lihzha/LAP-3B-Libero)
 
 ```bash
-hf download lihzha/LAP-3B-Libero --local-dir ./checkpoint/lap_libero
+hf download lihzha/LAP-3B-Libero --local-dir ./checkpoints/lap_libero
 ```
 
 Then follow [scripts/libero/README.md](scripts/libero/README.md).

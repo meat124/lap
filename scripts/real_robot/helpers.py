@@ -1,14 +1,17 @@
+import contextlib
+import dataclasses
+import signal
+
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
-import contextlib
-import signal
-import dataclasses
+
 
 def euler_to_rot6d(euler_angles: np.ndarray) -> np.ndarray:
     rot_matrix = R.from_euler("xyz", euler_angles, degrees=False).as_matrix()
     rot6d = np.concatenate([rot_matrix[:, 0], rot_matrix[:, 1]], axis=0)
     return rot6d
+
 
 def binarize_gripper_actions_np(actions: np.ndarray, threshold: float = 0.95) -> np.ndarray:
     """
@@ -23,7 +26,7 @@ def binarize_gripper_actions_np(actions: np.ndarray, threshold: float = 0.95) ->
     in_between_mask = ~(open_mask | closed_mask)
 
     carry = actions[-1] > threshold  # carry as boolean (True=open)
-    
+
     for i in reversed(range(n)):
         if not in_between_mask[i]:
             carry = open_mask[i]
@@ -31,9 +34,11 @@ def binarize_gripper_actions_np(actions: np.ndarray, threshold: float = 0.95) ->
 
     return new_actions
 
+
 def invert_gripper_actions_np(actions: np.ndarray) -> np.ndarray:
     """Invert gripper binary actions: 1 → 0, 0 → 1."""
     return 1.0 - actions
+
 
 def interpolate_rpy(curr, delta, steps):
     """Interpolate roll-pitch-yaw angles using quaternion SLERP.
@@ -82,6 +87,7 @@ def interpolate_rpy(curr, delta, steps):
 
     return rpy_arr
 
+
 # We are using Ctrl+C to optionally terminate rollouts early -- however, if we press Ctrl+C while the policy server is
 # waiting for a new action chunk, it will raise an exception and the server connection dies.
 # This context manager temporarily prevents Ctrl+C and delays it after the server call is complete.
@@ -102,6 +108,7 @@ def prevent_keyboard_interrupt():
         signal.signal(signal.SIGINT, original_handler)
         if interrupted:
             raise KeyboardInterrupt
+
 
 @dataclasses.dataclass(frozen=True)
 class ActionChunkPostProcessor:
