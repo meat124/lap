@@ -1,10 +1,20 @@
+from __future__ import annotations
+
 from enum import Enum
 from enum import IntEnum
 
-import tensorflow as tf
+# tensorflow is only needed by RLDS utility functions (extract_episode_path,
+# project_in_bounds, …).  Do NOT import at module level — this file is also
+# imported on paths that have TF/TensorRT incompatibilities (e.g. norm-stats
+# computation on nodes without working TRT).  Each function that needs TF
+# does a local lazy import instead.
 
-# Import rotation utilities directly to avoid package-level import side effects
-import lap.datasets.utils.rotation_utils as rotation_utils
+# rotation_utils is only needed by RLDS wrapper functions — lazy import to avoid
+# loading TensorFlow/TensorRT at module import time.
+def _get_rotation_utils():
+    import lap.datasets.utils.rotation_utils as _ru  # noqa: PLC0415
+    return _ru
+
 
 
 # Note: Both DROID and OXE use roll-pitch-yaw convention (extrinsic XYZ).
@@ -64,6 +74,7 @@ def extract_episode_path_from_file_path(file_path):
     Removes everything up to and including 'r2d2-data/' or
     'r2d2-data-full/', then trims anything from '/trajectory' onwards.
     """
+    import tensorflow as tf  # lazy: avoid TF/TRT at import time
     # Strip dataset prefix up to r2d2-data or r2d2-data-full
     rel = tf.strings.regex_replace(
         file_path,
@@ -80,6 +91,7 @@ def extract_episode_path_from_file_path(file_path):
 
 
 def project_in_bounds(xyz, intr4, extr44):
+    import tensorflow as tf  # lazy: avoid TF/TRT at import time
     xyz = tf.cast(xyz, tf.float32)
     intr4 = tf.cast(intr4, tf.float32)
     extr44 = tf.cast(extr44, tf.float32)
@@ -301,44 +313,44 @@ def _convert_eef_pos_to_eef_r6(action: tf.Tensor) -> tf.Tensor:
 
 def euler_xyz_to_rot(rx, ry, rz):
     """Build rotation matrix from XYZ extrinsic rotations (NumPy version)."""
-    return rotation_utils.euler_xyz_to_rot_np(rx, ry, rz)
+    return _get_rotation_utils().euler_xyz_to_rot_np(rx, ry, rz)
 
 
 def _euler_to_quaternion(euler: tf.Tensor) -> tf.Tensor:
     """Convert euler angles (rx, ry, rz) to quaternion (qx, qy, qz, qw)."""
-    return rotation_utils.euler_to_quaternion(euler)
+    return _get_rotation_utils().euler_to_quaternion(euler)
 
 
 def _euler_to_rotation_matrix(euler: tf.Tensor) -> tf.Tensor:
     """Convert euler angles (rx, ry, rz) to rotation matrix."""
-    return rotation_utils.euler_to_rotation_matrix(euler)
+    return _get_rotation_utils().euler_to_rotation_matrix(euler)
 
 
 def _quaternion_to_euler(quat: tf.Tensor) -> tf.Tensor:
     """Convert quaternion (qx, qy, qz, qw) to euler angles."""
-    return rotation_utils.quaternion_to_euler(quat)
+    return _get_rotation_utils().quaternion_to_euler(quat)
 
 
 def _quaternion_to_rotation_matrix(quat: tf.Tensor) -> tf.Tensor:
     """Convert quaternion (qx, qy, qz, qw) to rotation matrix."""
-    return rotation_utils.quaternion_to_rotation_matrix(quat)
+    return _get_rotation_utils().quaternion_to_rotation_matrix(quat)
 
 
 def _rotation_matrix_to_euler(rot_matrix: tf.Tensor) -> tf.Tensor:
     """Convert rotation matrix to Euler angles."""
-    return rotation_utils.rotation_matrix_to_euler(rot_matrix)
+    return _get_rotation_utils().rotation_matrix_to_euler(rot_matrix)
 
 
 def _rotation_matrix_to_quaternion(rot_matrix: tf.Tensor) -> tf.Tensor:
     """Convert rotation matrix to quaternion."""
-    return rotation_utils.rotation_matrix_to_quaternion(rot_matrix)
+    return _get_rotation_utils().rotation_matrix_to_quaternion(rot_matrix)
 
 
 def _rotation_matrix_to_r6(rot_matrix: tf.Tensor) -> tf.Tensor:
     """Flatten the first two rotation matrix rows into the 6D (R6) representation."""
-    return rotation_utils.rotation_matrix_to_r6(rot_matrix)
+    return _get_rotation_utils().rotation_matrix_to_r6(rot_matrix)
 
 
 def _r6_to_rotation_matrix(r6: tf.Tensor) -> tf.Tensor:
     """Reconstruct an orthonormal rotation matrix from the 6D (R6) representation."""
-    return rotation_utils.r6_to_rotation_matrix(r6)
+    return _get_rotation_utils().r6_to_rotation_matrix(r6)

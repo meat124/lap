@@ -9,11 +9,19 @@ Usage:
     from lap.datasets import get_vqa_dataset_id, get_dataset_config
 """
 
-# Base classes
-from lap.datasets.base_dataset import BaseDataset
-from lap.datasets.base_dataset import BaseRobotDataset
-from lap.datasets.output_schema import ObservationBuilder
-from lap.datasets.output_schema import TrajectoryOutputBuilder
+# RLDS base classes require TensorFlow + dlimp.  On nodes where TF/TensorRT is
+# broken or unavailable (e.g. login nodes running norm-stats computation on the
+# LeRobot path), we silently skip these imports so the rest of the package
+# (registry, helpers, LeRobot utils) is still usable.
+try:
+    from lap.datasets.base_dataset import BaseDataset
+    from lap.datasets.base_dataset import BaseRobotDataset
+    from lap.datasets.output_schema import ObservationBuilder
+    from lap.datasets.output_schema import TrajectoryOutputBuilder
+    _RLDS_AVAILABLE = True
+except Exception:
+    _RLDS_AVAILABLE = False
+
 from lap.datasets.registry import DATASET_REGISTRY  # Registry
 from lap.datasets.registry import VQA_DATASET_NAMES
 from lap.datasets.registry import WRIST_ROTATION_PATTERNS

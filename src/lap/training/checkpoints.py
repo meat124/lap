@@ -13,7 +13,15 @@ import jax
 from openpi.shared import array_typing as at
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
-import tensorflow as tf
+
+
+class _TFProxy:
+    """Lazy proxy for tensorflow."""
+    def __getattr__(self, name: str):
+        import tensorflow as _tf  # noqa: PLC0415
+        return getattr(_tf, name)
+
+tf = _TFProxy()
 
 from lap.datasets import data_loader as _data_loader
 import lap.shared.normalize_adapter as _normalize_adapter

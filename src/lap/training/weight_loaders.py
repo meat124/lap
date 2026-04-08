@@ -106,6 +106,57 @@ class CheckpointWeightLoader(WeightLoader):
 
 
 @dataclasses.dataclass(frozen=True)
+class SoftCheckpointWeightLoader(WeightLoader):
+    """Loads weights from a checkpoint, silently skipping shape-mismatched params.
+
+    Useful when finetuning with a different action_dim (e.g. 7→16): the VLM
+    backbone weights are loaded from the checkpoint while the action expert
+    weights whose shapes differ are left as random inits.
+    """
+
+    params_path: str
+
+    def load(self, params: at.Params) -> at.Params:
+        params_path_str = str(self.params_path)
+        if params_path_str.startswith("gs://"):
+            params_source = str(download.maybe_download(params_path_str))
+        else:
+            params_source = str(download.maybe_download(params_path_str))
+
+        loaded_params = _model.restore_params(params_source, restore_type=np.ndarray)
+
+        # Flatten both dicts and keep only shape-compatible keys.
+        flat_loaded = traverse_util.flatten_dict(loaded_params)
+        flat_target = traverse_util.flatten_dict(params)
+
+        compatible = {}
+        skipped = []
+        for key, value in flat_loaded.items():
+            if key not in flat_target:
+                skipped.append(("/".join(key), "not in target"))
+                continue
+            target_val = flat_target[key]
+            t_shape = getattr(target_val, "shape", None)
+            v_shape = getattr(value, "shape", None)
+            if t_shape is not None and v_shape is not None and t_shape != v_shape:
+                skipped.append(("/".join(key), f"shape {v_shape} → {t_shape}"))
+                continue
+            compatible[key] = value
+
+        if skipped:
+            logger.info(
+                "SoftCheckpointWeightLoader: skipping %d incompatible param(s):", len(skipped)
+            )
+            for name, reason in skipped[:20]:
+                logger.info("  %-60s  (%s)", name, reason)
+            if len(skipped) > 20:
+                logger.info("  ... and %d more", len(skipped) - 20)
+
+        compatible_nested = traverse_util.unflatten_dict(compatible)
+        return _merge_params(compatible_nested, params, missing_regex=".*")
+
+
+@dataclasses.dataclass(frozen=True)
 class PaliGemmaWeightLoader(WeightLoader):
     """Loads weights from the official PaliGemma checkpoint.
 
@@ -649,6 +700,7 @@ class WeightLoaderChoice(WeightLoader):
     kind: Literal[
         "none",
         "checkpoint",
+        "soft_checkpoint",
         "paligemma",
         "paligemma2",
         "gemma3",
@@ -666,6 +718,10 @@ class WeightLoaderChoice(WeightLoader):
                 if not self.params_path:
                     raise ValueError("--weight-loader.params-path must be set when kind=checkpoint")
                 return CheckpointWeightLoader(self.params_path)
+            case "soft_checkpoint":
+                if not self.params_path:
+                    raise ValueError("--weight-loader.params-path must be set when kind=soft_checkpoint")
+                return SoftCheckpointWeightLoader(self.params_path)
             case "paligemma":
                 return PaliGemmaWeightLoader()
             case "paligemma2":

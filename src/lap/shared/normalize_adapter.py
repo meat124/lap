@@ -1,15 +1,31 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 
-import dlimp as dl
 import jax
 from jax.experimental import multihost_utils as mh
 import numpy as np
 import numpydantic
 from openpi.shared import normalize as _normalize
 import pydantic
-import tensorflow as tf
+
+
+class _TFProxy:
+    """Lazy proxy for tensorflow."""
+    def __getattr__(self, name: str):
+        import tensorflow as _tf  # noqa: PLC0415
+        return getattr(_tf, name)
+
+tf = _TFProxy()
+
+
+def _get_dl():
+    import dlimp as dl  # noqa: PLC0415
+    return dl
+
+
 from tqdm_loggable.auto import tqdm
 
 
@@ -87,7 +103,7 @@ def check_dataset_statistics(save_dir: str | None = None) -> dict:
 
 
 def get_dataset_statistics(
-    dataset: dl.DLataset,
+    dataset,  # dl.DLataset — lazy import avoids TF at module load
     save_dir: str | None = None,
     action_key: str = "action",
     state_key: str = "proprio",

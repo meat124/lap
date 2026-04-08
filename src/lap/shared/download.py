@@ -11,7 +11,18 @@ import urllib.parse
 
 from etils import epath
 import filelock
-import tensorflow as tf
+
+
+class _TFProxy:
+    """Lazy proxy for ``tensorflow`` — avoids loading TF at module import time
+    so that paths not needing GCS / tf.io work on nodes with TF/TRT issues."""
+
+    def __getattr__(self, name: str):
+        import tensorflow as _tf  # noqa: PLC0415
+        return getattr(_tf, name)
+
+
+tf = _TFProxy()
 
 _CACHE_COMPLETE_MARKER = "COMMIT_SUCCESS"
 _LEGACY_COMPLETE_MARKER = "commit_success.txt"

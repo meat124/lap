@@ -36,6 +36,7 @@ class CoTOutputs:
     norm_stats: dict | None = None
     normalization_type: str = "bounds_q99"
     transform_strategy: Literal["standard", "vla0"] = "standard"
+    action_dim: int | None = None
 
     def __post_init__(self):
         """Resolve string schema name to LanguageActionFormat instance."""
@@ -63,8 +64,9 @@ class CoTOutputs:
             Dictionary with 'actions' array and 'reasoning' string.
         """
         if "reasoning" not in data:
+            dim = self.action_dim if self.action_dim is not None else 7
             return {
-                "actions": np.asarray(data["actions"][:, :7]),
+                "actions": np.asarray(data["actions"][:, :dim]),
                 "reasoning": None,
             }
 

@@ -603,6 +603,124 @@ class TrainConfig(upstream_config.TrainConfig):
         return _to_path(self.checkpoint_base_dir, self.name, self.exp_name)
 
 
+@dataclasses.dataclass(frozen=True)
+class _SelectRightArmDims:
+    """Select right-arm-only dimensions (right_arm[0:7] + right_gripper[14]) from
+    ``actions`` and ``observation/state`` after RepackTransform.
+
+    modality.json ordering for rby1:
+      0-6  : right_arm   (7 joints)
+      7-13 : left_arm    (7 joints)  ← dropped
+      14   : right_gripper
+      15   : left_gripper             ← dropped
+    Result is 8-DOF: [0, 1, 2, 3, 4, 5, 6, 14]
+    """
+
+    _INDICES: tuple[int, ...] = dataclasses.field(
+        default=(0, 1, 2, 3, 4, 5, 6, 14), init=False, repr=False
+    )
+
+    def __call__(self, data: dict) -> dict:
+        idx = list(self._INDICES)
+        if "actions" in data:
+            data = {**data, "actions": data["actions"][..., idx]}
+        if "observation" in data and "state" in data["observation"]:
+            obs = {**data["observation"], "state": data["observation"]["state"][..., idx]}
+            data = {**data, "observation": obs}
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
+class Rby1DataConfig(upstream_config.DataConfigFactory):
+    """Data config for the rby1 bimanual robot dataset in LeRobot v2.1 format.
+
+    Expected dataset structure (loaded via HF_LEROBOT_HOME env var):
+      HF_LEROBOT_HOME/<repo_id>/
+        data/   – parquet files with state, action, prompt …
+        videos/ – MP4 files for observation.images.{ego_view,left_wrist,right_wrist}
+        meta/   – info.json, tasks.jsonl …
+
+    Key mapping after RepackTransform:
+      observation.images.ego_view   →  observation/base_0_rgb   (primary camera)
+      observation.images.right_wrist →  observation/left_wrist_0_rgb  (right wrist; stored under left_wrist_0_rgb key for model compatibility)
+      observation.state             →  observation/state
+      action                        →  actions
+      prompt  (from task via PromptFromLeRobotTask)             task description
+
+    right_arm_only=True (default for lap_rby1):
+      Slices actions and state to 8-DOF right-arm-only subset:
+      right_arm[0:7] + right_gripper[14] → indices [0,1,2,3,4,5,6,14]
+    """
+
+    repo_id: str = "PuttingCupintotheDishV2"
+    # Explicitly expose rlds_data_dir=None so that train.py can read the attribute
+    # without AttributeError (lap uses it in init_tpu).
+    rlds_data_dir: str | None = None
+    # When True, slice actions/state to right-arm-only 8-DOF subset.
+    right_arm_only: bool = False
+    # Local root directory containing <repo_id>/ subfolders.
+    # Sets HF_LEROBOT_HOME at runtime so lerobot can locate the dataset without
+    # downloading from HuggingFace Hub.  Can also be provided via the
+    # HF_LEROBOT_HOME environment variable instead.
+    lerobot_home: str | None = None
+    # Limit training to the first N episodes after shuffling.
+    # None (default) uses all episodes.
+    # Matches GR00T behaviour: episodes are shuffled with `episode_shuffle_seed`
+    # before selecting the first N, so the subset is random but reproducible.
+    # CLI: --data.num-episodes 100
+    num_episodes: int | None = None
+    # Seed for episode-index shuffling when num_episodes is set.
+    # Kept fixed across runs so the same subset is always selected.
+    # CLI: --data.episode-shuffle-seed 42
+    episode_shuffle_seed: int = 42
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> upstream_config.DataConfig:
+        repack_inputs: list = [
+            upstream_transforms.RepackTransform({
+                "observation": {
+                    "base_0_rgb": "observation.images.ego_view",
+                    "left_wrist_0_rgb": "observation.images.right_wrist",
+                    "state": "observation.state",
+                },
+                "actions": "action",
+                "prompt": "prompt",
+            })
+        ]
+        if self.right_arm_only:
+            repack_inputs.append(_SelectRightArmDims())
+        repack_transform = upstream_transforms.Group(inputs=repack_inputs)
+        data_transforms = upstream_transforms.Group(
+            inputs=[
+                lap_policy.CoTInputs(
+                    action_dim=model_config.action_dim,
+                    model_type=model_config.model_type,
+                    enable_langact_training=model_config.enable_langact_training,
+                )
+            ],
+            outputs=[
+                lap_policy.CoTOutputs(
+                    # joint-space robot: language_action_format is not used
+                    # (enable_langact_training=False in lap_rby1/lap_rby1_lora)
+                    language_action_format=None,
+                    action_dim=model_config.action_dim,
+                )
+            ],
+        )
+        model_transforms = ModelTransformFactory(
+            prompt_format=model_config.prompt_format,
+        )(model_config)
+        base_cfg = self.create_base_config(assets_dirs, model_config)
+        return dataclasses.replace(
+            base_cfg,
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+            prompt_from_task=True,
+        )
+
+
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     TrainConfig(
@@ -780,6 +898,77 @@ _CONFIGS = [
         keep_period=2000,
         num_train_steps=40_001,
         batch_size=256,
+        ema_schedule_choice=EmaScheduleChoice(kind="constant"),
+    ),
+    TrainConfig(
+        name="lap_rby1",
+        model=lap_config.LAPConfig(
+            action_dim=8,           # rby1 right arm only: right_arm[7] + right_gripper[1]
+            action_horizon=16,
+            max_token_len=180,
+            enable_action_training=True,
+            stop_action_to_vlm_grad=True,   # block AE→VLM gradients (VLM is frozen)
+            language_loss_weight=0.0,   # joint-space actions; no language action supervision
+            enable_langact_training=False,
+            enable_image_augmentation=False,
+        ),
+        freeze_filter=lap_config.LAPConfig(
+            action_dim=8,
+        ).get_vlm_freeze_filter(),  # freeze VLM (SigLIP + Gemma 2B); only action expert trains
+        data=Rby1DataConfig(right_arm_only=True),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000,
+            peak_lr=2e-4,           # higher LR: only ~300M action expert params update
+            decay_steps=40_000,
+            decay_lr=2e-4,
+        ),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="soft_checkpoint",
+            params_path="checkpoints/lap/params",
+        ),
+        policy_metadata={"action_dim": 8, "action_horizon": 16, "right_arm_only": True},
+        save_interval=10000,
+        keep_period=10000,
+        num_train_steps=40_001,
+        batch_size=32,
+        ema_schedule_choice=EmaScheduleChoice(kind="constant"),
+    ),
+    # lap_rby1_lora: same as lap_rby1 but uses LoRA adapters so only ~90-180M
+    # parameters are trainable (vs ~2.7B for full fine-tune).
+    # Requires ~10-12 GB VRAM → fits on a single RTX 4090 (24 GB).
+    # VLM backbone (PaliGemma 2B) and action expert (Gemma 300M) are
+    # frozen except for their LoRA adapters (rank=16). stop_action_to_vlm_grad=True
+    # additionally blocks gradients from the action expert into the VLM's
+    # K/V activations, reducing backward-pass memory further.
+    TrainConfig(
+        name="lap_rby1_lora",
+        model=lap_config.LAPConfig(
+            action_dim=8,
+            action_horizon=16,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",       # LoRA adapters on VLM (rank=16)
+            action_expert_variant="gemma_300m_lora", # LoRA adapters on action expert (rank=32)
+            enable_action_training=True,
+            stop_action_to_vlm_grad=True,   # block AE→VLM gradients → less memory
+            language_loss_weight=0.0,   # joint-space robot: no language action supervision
+            enable_langact_training=False,  # joint-space: disable EEF language action labels
+            enable_image_augmentation=False,
+        ),
+        data=Rby1DataConfig(right_arm_only=True),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,           # higher LR is common for LoRA
+            decay_steps=40_000,
+            decay_lr=1e-4,
+        ),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="soft_checkpoint",
+            params_path="checkpoints/lap/params",
+        ),
+        save_interval=2000,
+        keep_period=2000,
+        num_train_steps=40_001,
+        batch_size=1,               # small batch to fit 24 GB VRAM; use grad accum if needed
         ema_schedule_choice=EmaScheduleChoice(kind="constant"),
     ),
     TrainConfig(

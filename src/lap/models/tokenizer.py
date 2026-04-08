@@ -6,7 +6,8 @@ from typing import Literal, TypeAlias
 import numpy as np
 from openpi.models import tokenizer as _tokenizer
 import sentencepiece
-from transformers import AutoProcessor
+# AutoProcessor is only used inside _init_fast_tokenizer — lazy import avoids
+# triggering the TF/TRT chain at module load time.
 
 from lap.models.prompt_utils.checkers import is_number
 from lap.models.prompt_utils.prompt import DEFAULT_VQA_PROMPT_FORMAT
@@ -564,6 +565,7 @@ class FASTTokenizerMixin:
         """Initialize the FAST action tokenizer."""
         self._fast_skip_tokens = fast_skip_tokens
         logging.info(f"Loading FAST tokenizer from: {fast_tokenizer_path}")
+        from transformers import AutoProcessor  # lazy: avoids TF import chain
         self._fast_tokenizer = AutoProcessor.from_pretrained(fast_tokenizer_path, trust_remote_code=True)
 
     def _act_tokens_to_vocab_tokens(self, tokens: np.ndarray | list[int]) -> np.ndarray:

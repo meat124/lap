@@ -11,9 +11,16 @@ import numpy as np
 import openpi.models.model as _model
 import openpi.training.data_loader as up  # upstream module
 import openpi.transforms as up_tf
-import tensorflow as tf
 
-from lap.datasets.dataset_mixer import OXEDatasets
+
+class _TFProxy:
+    """Lazy proxy for tensorflow — avoids loading TF at module import time."""
+    def __getattr__(self, name: str):
+        import tensorflow as _tf  # noqa: PLC0415
+        return getattr(_tf, name)
+
+tf = _TFProxy()
+
 from lap.models.model_adapter import CoTObservation
 from lap.models.tokenizer import PaligemmaTokenizer
 import lap.training.config as _config
@@ -32,6 +39,7 @@ def _create_rlds_dataset(
     split: str,
     hash_tables: dict | None = None,
 ) -> up.Dataset:
+    from lap.datasets.dataset_mixer import OXEDatasets  # lazy: avoids TF at module load
     # Per-host batching; avoids redundant slicing work in multi-process setups
     local_bsz = max(1, batch_size // jax.process_count())
 
@@ -122,6 +130,29 @@ class IterableTransformedDataset(up.IterableTransformedDataset):
                 yield self._transform(sample)
 
 
+def _patch_lerobot_video_backend() -> None:
+    """Force lerobot to use pyav if torchcodec's native libs (libavutil) are absent.
+
+    torchcodec may be importable as a Python package but fail at runtime because
+    the underlying FFmpeg shared libraries (libavutil.so.*) are not installed.
+    We detect this early and monkey-patch get_safe_default_codec to "pyav" so
+    LeRobotDataset workers don't crash on the first video decode.
+    """
+    try:
+        import torchcodec._core  # noqa: F401 — triggers native lib load
+    except (ImportError, OSError, RuntimeError):
+        try:
+            import lerobot.common.datasets.video_utils as _lv
+            import lerobot.common.datasets.lerobot_dataset as _ld
+            _safe_pyav = lambda: "pyav"  # noqa: E731
+            _lv.get_safe_default_codec = _safe_pyav
+            # lerobot_dataset.py uses `from video_utils import get_safe_default_codec`,
+            # so we must also patch the name in that module's global namespace.
+            _ld.get_safe_default_codec = _safe_pyav
+        except ImportError:
+            pass
+
+
 # ---------- Public entry: create_data_loader ----------
 def create_data_loader(
     config: _config.TrainConfig,
@@ -140,6 +171,11 @@ def create_data_loader(
     # Only clear LEROBOT_HOME if we are about to construct a LeRobot dataset.
     if config.data.repo_id not in (None, "fake") and config.data.rlds_data_dir is None:
         os.environ.pop("LEROBOT_HOME", None)
+        # If the config specifies a local lerobot_home, export it so that the
+        # lerobot library finds the dataset without hitting HuggingFace Hub.
+        _lerobot_home = getattr(config.data, "lerobot_home", None)
+        if _lerobot_home:
+            os.environ["HF_LEROBOT_HOME"] = _lerobot_home
 
     data_cfg: _config.DataConfig = config.data.create(config.assets_dirs, config.model)
     logging.info("data_config: %s", data_cfg)
@@ -183,6 +219,8 @@ def create_data_loader(
         )
 
     # Non-RLDS: delegate entirely to upstream (this will require torch if used)
+    # Ensure lerobot uses pyav when torchcodec's native libs (libavutil) are absent.
+    _patch_lerobot_video_backend()
     return up.create_torch_data_loader(
         data_cfg,
         model_config=config.model,
