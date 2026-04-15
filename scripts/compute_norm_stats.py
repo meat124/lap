@@ -277,6 +277,7 @@ def main(
     config_name: Annotated[str, tyro.conf.Positional],
     data_dir: pathlib.Path | None = None,
     max_frames: int | None = None,
+    repo_id: str | None = None,
 ) -> None:
     """Compute normalization statistics for a LAP training config.
 
@@ -285,6 +286,10 @@ def main(
         data_dir: Root directory containing the LeRobot dataset (the folder that
             holds <repo_id>/data/*.parquet).  Overrides HF_LEROBOT_HOME.
         max_frames: If set, stop after this many frames.
+        repo_id: Override the repo_id from the config.  Useful for computing
+            stats on a dataset variant (e.g. PuttingCupintotheDishV2_50_eef)
+            while reusing the same config (lap_rby1_eef).  Stats are saved
+            under assets/<config_name>/<repo_id>/norm_stats.json.
     """
     config = _config.get_config(config_name)
     data_config_factory = config.data
@@ -296,7 +301,8 @@ def main(
             "RLDS datasets handle normalization internally."
         )
 
-    repo_id = data_config.repo_id
+    if repo_id is None:
+        repo_id = data_config.repo_id
     if repo_id is None:
         raise ValueError("data_config.repo_id is not set")
 

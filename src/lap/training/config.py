@@ -631,6 +631,66 @@ class _SelectRightArmDims:
 
 
 @dataclasses.dataclass(frozen=True)
+class Rby1EefDataConfig(upstream_config.DataConfigFactory):
+    """Data config for the rby1 EEF-space dataset (pre-converted via FK).
+
+    Expects a dataset where state and action are already 7D EEF:
+      [x, y, z, roll, pitch, yaw, gripper_right]
+
+    Produced by scripts/convert_rby1_joint_to_eef.py from the original
+    joint-space dataset.  action_dim=7 matches the LAP pre-trained model.
+    """
+
+    repo_id: str = "PuttingCupintotheDishV2_eef"
+    rlds_data_dir: str | None = None
+    lerobot_home: str | None = None
+    num_episodes: int | None = None
+    episode_shuffle_seed: int = 42
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> upstream_config.DataConfig:
+        repack_transform = upstream_transforms.Group(inputs=[
+            upstream_transforms.RepackTransform({
+                "observation": {
+                    "base_0_rgb": "observation.images.ego_view",
+                    "left_wrist_0_rgb": "observation.images.right_wrist",
+                    "state": "observation.state",
+                },
+                "actions": "action",
+                "prompt": "prompt",
+            }),
+            # No _SelectRightArmDims — data is already 7D right-arm EEF
+        ])
+        data_transforms = upstream_transforms.Group(
+            inputs=[
+                lap_policy.CoTInputs(
+                    action_dim=model_config.action_dim,
+                    model_type=model_config.model_type,
+                    enable_langact_training=model_config.enable_langact_training,
+                )
+            ],
+            outputs=[
+                lap_policy.CoTOutputs(
+                    language_action_format=None,
+                    action_dim=model_config.action_dim,
+                )
+            ],
+        )
+        model_transforms = ModelTransformFactory(
+            prompt_format=model_config.prompt_format,
+        )(model_config)
+        base_cfg = self.create_base_config(assets_dirs, model_config)
+        return dataclasses.replace(
+            base_cfg,
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+            prompt_from_task=True,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class Rby1DataConfig(upstream_config.DataConfigFactory):
     """Data config for the rby1 bimanual robot dataset in LeRobot v2.1 format.
 
@@ -927,6 +987,44 @@ _CONFIGS = [
             params_path="checkpoints/lap/params",
         ),
         policy_metadata={"action_dim": 8, "action_horizon": 16, "right_arm_only": True},
+        save_interval=10000,
+        keep_period=10000,
+        num_train_steps=40_001,
+        batch_size=32,
+        ema_schedule_choice=EmaScheduleChoice(kind="constant"),
+    ),
+    # lap_rby1_eef: EEF-space finetuning for rby1.  action_dim=7 matches the
+    # LAP pre-training EEF action space [dx,dy,dz, droll,dpitch,dyaw, gripper].
+    # Dataset must be pre-converted from joint-space to EEF using
+    # scripts/convert_rby1_joint_to_eef.py.
+    # Language action training is disabled — only the action expert is trained.
+    TrainConfig(
+        name="lap_rby1_eef",
+        model=lap_config.LAPConfig(
+            action_dim=7,           # EEF: [x,y,z,roll,pitch,yaw,gripper]
+            action_horizon=16,
+            max_token_len=180,
+            enable_action_training=True,
+            stop_action_to_vlm_grad=True,
+            language_loss_weight=0.0,
+            enable_langact_training=False,
+            enable_image_augmentation=False,
+        ),
+        freeze_filter=lap_config.LAPConfig(
+            action_dim=7,
+        ).get_vlm_freeze_filter(),
+        data=Rby1EefDataConfig(),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000,
+            peak_lr=2e-4,
+            decay_steps=40_000,
+            decay_lr=2e-4,
+        ),
+        weight_loader=weight_loaders.WeightLoaderChoice(
+            kind="soft_checkpoint",
+            params_path="checkpoints/lap/params",
+        ),
+        policy_metadata={"action_dim": 7, "action_horizon": 16, "right_arm_only": True, "eef": True},
         save_interval=10000,
         keep_period=10000,
         num_train_steps=40_001,
