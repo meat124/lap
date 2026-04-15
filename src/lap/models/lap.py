@@ -609,6 +609,9 @@ class LAP(_pi0.Pi0):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
+        prev_chunk_left_over: at.Float[at.Array, "b ah ad"] | None = None,
+        rtc_prefix_weights: at.Float[at.Array, "b ah"] | None = None,
+        rtc_max_gw: float = 1.0,
     ) -> _model.Actions:
         observation = preprocess_observation(
             None, observation, train=False, image_keys=self.image_keys, aug_wrist_image=self.aug_wrist_image
@@ -619,6 +622,23 @@ class LAP(_pi0.Pi0):
         batch_size = observation.state.shape[0]
         if noise is None:
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        # RTC setup: prefix_weights already pre-computed by policy.py (as a JAX array)
+        rtc_enabled = (
+            prev_chunk_left_over is not None
+            and rtc_prefix_weights is not None
+        )
+        if rtc_enabled:
+            from lap.models.rtc_lap import guide_prediction as _rtc_guide
+            _rtc_max_gw = rtc_max_gw
+            _prefix_weights = rtc_prefix_weights[0]  # remove batch dim: (action_horizon,)
+            # Pad prev_chunk to match (B, action_horizon, action_dim)
+            if prev_chunk_left_over.shape[1] < self.action_horizon or prev_chunk_left_over.shape[2] < self.action_dim:
+                padded = jnp.zeros((batch_size, self.action_horizon, self.action_dim), dtype=noise.dtype)
+                pt = min(prev_chunk_left_over.shape[1], self.action_horizon)
+                pa = min(prev_chunk_left_over.shape[2], self.action_dim)
+                padded = padded.at[:, :pt, :pa].set(prev_chunk_left_over[:, :pt, :pa])
+                prev_chunk_left_over = padded
 
         # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
@@ -664,7 +684,16 @@ class LAP(_pi0.Pi0):
             assert gemma_out[0] is None
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-            return x_t + dt * v_t, time + dt
+            x_t = x_t + dt * v_t
+
+            # Apply RTC guidance after Euler step
+            if rtc_enabled:
+                x_t = _rtc_guide(
+                    x_t, prev_chunk_left_over, True, time,
+                    _rtc_max_gw, _prefix_weights,
+                )
+
+            return x_t, time + dt
 
         def cond(carry):
             x_t, time = carry

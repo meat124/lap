@@ -49,8 +49,21 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
-    # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
-    policy: Checkpoint | None = None
+    # Training config name (e.g. "lap_rby1_eef"). Overrides --env if provided.
+    policy_config: str | None = None
+    # Checkpoint directory. Required when --policy-config is set.
+    policy_dir: str | None = None
+    # Policy type: "flow" or "ar". Only relevant with --policy-config.
+    policy_type: Literal["flow", "ar"] = "flow"
+    # ------ RTC (Real-Time Chunking) ------
+    # Enable RTC guidance between consecutive action chunks.
+    use_rtc: bool = False
+    # Maximum guidance weight applied at the start of each denoising trajectory.
+    rtc_max_guidance_weight: float = 1.0
+    # Number of actions executed per chunk; determines the unexecuted tail for blending.
+    rtc_execution_horizon: int = 8
+    # Guidance weight schedule across the chunk prefix: "linear" | "exp" | "ones" | "zeros".
+    rtc_schedule: str = "linear"
 
 
 # Default checkpoints that should be used for each environment.
@@ -64,7 +77,12 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
 
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
-    checkpoint = args.policy or DEFAULT_CHECKPOINT.get(args.env)
+    if args.policy_config is not None:
+        if args.policy_dir is None:
+            raise ValueError("--policy-dir is required when --policy-config is provided.")
+        checkpoint = Checkpoint(config=args.policy_config, dir=args.policy_dir, type=args.policy_type)
+    else:
+        checkpoint = DEFAULT_CHECKPOINT.get(args.env)
 
     if checkpoint is None:
         raise ValueError(f"Unsupported environment mode: {args.env}")
@@ -87,6 +105,25 @@ def create_policy(args: Args) -> _policy.Policy:
 
 def main(args: Args) -> None:
     policy = create_policy(args)
+    # Apply RTC configuration post-construction.
+    if args.use_rtc:
+        rtc_config = {
+            "enabled": True,
+            "max_guidance_weight": args.rtc_max_guidance_weight,
+            "execution_horizon": args.rtc_execution_horizon,
+            "schedule": args.rtc_schedule,
+        }
+        policy._rtc_config = rtc_config
+        policy._execute_chunk_size = args.rtc_execution_horizon
+        policy._metadata["rtc_enabled"] = True
+        policy._metadata["rtc_execution_horizon"] = args.rtc_execution_horizon
+        logging.info(
+            "RTC enabled (max_guidance_weight=%.2f, execution_horizon=%d, schedule=%s)",
+            args.rtc_max_guidance_weight,
+            args.rtc_execution_horizon,
+            args.rtc_schedule,
+        )
+
     policy_metadata = policy.metadata
     # Record the policy's behavior.
     if args.record:
