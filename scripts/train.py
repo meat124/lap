@@ -595,6 +595,7 @@ def main(config: _config.TrainConfig):
                 retry_backoff=2.0,
                 fallback_to_sync=True,
                 keep_period=config.keep_period,
+                assets_dirs=config.assets_dirs,
             )
 
         if step % config.log_interval == 0:

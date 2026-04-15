@@ -181,6 +181,7 @@ def save_state(
     async_timeout_secs: int | None = None,
     keep_period: int | None = None,
     preserve_checkpoint: bool = False,
+    assets_dirs: epath.Path | str | None = None,
 ) -> ocp.CheckpointManager:
     start_time = time.perf_counter()
     directory_str = _extract_directory(checkpoint_manager)
@@ -246,9 +247,49 @@ def save_state(
                                         f"num_trajectories={getattr(stat, 'num_trajectories', 'N/A')}"
                                     )
                         else:
-                            logging.warning("No normalization statistics available to save with checkpoint")
+                            # No norm stats from data loader — fall back to pre-computed assets file.
+                            if assets_dirs is not None:
+                                asset_id = data_config.asset_id
+                                src_dir = epath.Path(assets_dirs) / asset_id
+                                src_file = src_dir / "norm_stats.json"
+                                if tf.io.gfile.exists(str(src_file)):
+                                    dst_dir = str(directory / asset_id)
+                                    tf.io.gfile.makedirs(dst_dir)
+                                    dst_file = tf.io.gfile.join(dst_dir, "norm_stats.json")
+                                    tf.io.gfile.copy(str(src_file), dst_file, overwrite=True)
+                                    logging.info(
+                                        f"Copied pre-computed norm stats | src={src_file} | dst={dst_file}"
+                                    )
+                                else:
+                                    logging.warning(
+                                        f"No normalization statistics available to save with checkpoint. "
+                                        f"Pre-computed file not found at {src_file}"
+                                    )
+                            else:
+                                logging.warning("No normalization statistics available to save with checkpoint")
                     else:
-                        logging.info("Data loader does not support norm stats checkpointing (non-RLDS dataset)")
+                        # Non-RLDS data loader — fall back to pre-computed assets file.
+                        if assets_dirs is not None:
+                            data_config = data_loader.data_config() if hasattr(data_loader, "data_config") else None
+                            asset_id = data_config.asset_id if data_config is not None else None
+                            if asset_id is not None:
+                                src_dir = epath.Path(assets_dirs) / asset_id
+                                src_file = src_dir / "norm_stats.json"
+                                if tf.io.gfile.exists(str(src_file)):
+                                    dst_dir = str(directory / asset_id)
+                                    tf.io.gfile.makedirs(dst_dir)
+                                    dst_file = tf.io.gfile.join(dst_dir, "norm_stats.json")
+                                    tf.io.gfile.copy(str(src_file), dst_file, overwrite=True)
+                                    logging.info(
+                                        f"Copied pre-computed norm stats | src={src_file} | dst={dst_file}"
+                                    )
+                                else:
+                                    logging.warning(
+                                        f"Pre-computed norm stats not found at {src_file}; "
+                                        "skipping norm stats checkpoint"
+                                    )
+                        else:
+                            logging.info("Data loader does not support norm stats checkpointing (non-RLDS dataset)")
 
                 # Save dataloader state (iterator position and batch counter)
                 # This allows resuming training from the exact same data position
